@@ -32,6 +32,30 @@ jobs:
       - name: Build Windows app
         run: flutter build windows --release
 
+      - name: Copy Visual C++ Redistributables
+        run: |
+          $buildPath = "build/windows/x64/runner/Release"
+          
+          # Find and copy Visual C++ Redistributable DLLs
+          $vcRedistPaths = @(
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\*.dll",
+              "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\*.dll",
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2019\BuildTools\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\*.dll",
+              "C:\Windows\System32\msvcp140.dll",
+              "C:\Windows\System32\vcruntime140.dll",
+              "C:\Windows\System32\vcruntime140_1.dll"
+          )
+          
+          foreach ($path in $vcRedistPaths) {
+              $files = Get-ChildItem $path -ErrorAction SilentlyContinue
+              foreach ($file in $files) {
+                  if ($file.Name -match "(msvcp140|vcruntime140)") {
+                      Copy-Item $file.FullName $buildPath -Force -ErrorAction SilentlyContinue
+                      echo "Copied: $($file.Name)"
+                  }
+              }
+          }
+
       - name: Get app info and create package
         id: package
         run: |
@@ -46,8 +70,37 @@ jobs:
           echo "APP_NAME=$appName" >> $env:GITHUB_ENV
           echo "APP_VERSION=$version" >> $env:GITHUB_ENV
           
-          # Create ZIP package
+          # Ensure all required DLLs are in the Release folder
           $buildPath = "build/windows/x64/runner/Release"
+          $flutterRoot = $env:FLUTTER_ROOT
+          
+          if (Test-Path $buildPath) {
+              # Copy missing Flutter DLLs
+              $flutterDlls = @(
+                  "$flutterRoot/bin/flutter_windows.dll",
+                  "$flutterRoot/bin/flutter_windows.dll.lib"
+              )
+          
+              foreach ($dll in $flutterDlls) {
+                  if (Test-Path $dll) {
+                      Copy-Item $dll $buildPath -Force
+                      echo "Copied: $(Split-Path $dll -Leaf)"
+                  }
+              }
+          
+              # Also copy any additional DLLs from the runner folder
+              $runnerPath = "build/windows/x64/runner"
+              if (Test-Path "$runnerPath/*.dll") {
+                  Copy-Item "$runnerPath/*.dll" $buildPath -Force
+                  echo "Copied runner DLLs"
+              }
+          
+              # List all files in release folder for debugging
+              echo "Files in release folder:"
+              Get-ChildItem $buildPath | Format-Table Name, Length -AutoSize
+          }
+          
+          # Create ZIP package with all dependencies
           $zipName = "$appName-windows-x64-$version.zip"
           
           if (Test-Path $buildPath) {
@@ -118,6 +171,17 @@ jobs:
               echo "✅ Build directory exists"
               echo "📁 Build contents:"
               Get-ChildItem $buildPath | Format-Table Name, Length -AutoSize
+          
+              # Check for required DLLs
+              $requiredDlls = @("flutter_windows.dll", "msvcp140.dll", "vcruntime140.dll")
+              echo "🔍 Checking for required DLLs:"
+              foreach ($dll in $requiredDlls) {
+                  if (Test-Path "$buildPath/$dll") {
+                      echo "✅ $dll found"
+                  } else {
+                      echo "❌ $dll missing"
+                  }
+              }
           } else {
               echo "❌ Build directory not found"
           }
