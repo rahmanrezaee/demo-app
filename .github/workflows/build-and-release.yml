@@ -5,6 +5,10 @@ on:
     branches: [ master ]
   workflow_dispatch:  # Allow manual trigger
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   build-and-release:
     runs-on: windows-latest
@@ -65,9 +69,7 @@ jobs:
 
       - name: Create Release
         id: create_release
-        uses: softprops/action-gh-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ env.APP_NAME }} v${{ env.APP_VERSION }}
@@ -94,6 +96,7 @@ jobs:
           prerelease: false
           files: |
             ${{ env.ZIP_NAME }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify build output
         run: |
@@ -120,11 +123,10 @@ jobs:
           }
 
       - name: Upload additional assets (optional)
-        uses: softprops/action-gh-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           files: |
             build/windows/x64/runner/Release/${{ env.APP_NAME }}.exe
+          token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
