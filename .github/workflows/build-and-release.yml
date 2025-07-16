@@ -1,0 +1,130 @@
+name: Build Flutter Windows App and Create Release
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Windows app
+        run: flutter build windows --release
+
+      - name: Get app info and create package
+        id: package
+        run: |
+          # Get app name from pubspec.yaml
+          $content = Get-Content pubspec.yaml -Raw
+          $appName = ($content | Select-String "name:\s*(.+)" | ForEach-Object { $_.Matches[0].Groups[1].Value }).Trim()
+          
+          # Get version from pubspec.yaml
+          $version = ($content | Select-String "version:\s*(.+)" | ForEach-Object { $_.Matches[0].Groups[1].Value }).Trim()
+          
+          # Set environment variables
+          echo "APP_NAME=$appName" >> $env:GITHUB_ENV
+          echo "APP_VERSION=$version" >> $env:GITHUB_ENV
+          
+          # Create ZIP package
+          $buildPath = "build/windows/x64/runner/Release"
+          $zipName = "$appName-windows-x64-$version.zip"
+          
+          if (Test-Path $buildPath) {
+              Compress-Archive -Path "$buildPath/*" -DestinationPath $zipName -Force
+              echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+              echo "Package created: $zipName"
+          } else {
+              Write-Error "Build path not found: $buildPath"
+              exit 1
+          }
+
+      - name: Generate release tag
+        id: tag
+        run: |
+          $timestamp = Get-Date -Format "yyyy.MM.dd.HHmm"
+          $tag = "v${{ env.APP_VERSION }}-$timestamp"
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+          echo "Generated tag: $tag"
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ env.APP_NAME }} v${{ env.APP_VERSION }}
+          body: |
+            ## 🚀 ${{ env.APP_NAME }} Windows Release
+            
+            **Version:** ${{ env.APP_VERSION }}
+            **Build:** ${{ steps.tag.outputs.tag }}
+            **Platform:** Windows x64
+            
+            ### 📦 Installation
+            1. Download the ZIP file from assets below
+            2. Extract to your desired location
+            3. Run the .exe file inside the extracted folder
+            
+            ### 🔧 Build Info
+            - Built from commit: ${{ github.sha }}
+            - Built on: ${{ github.run_number }}
+            - Build date: ${{ github.event.head_commit.timestamp }}
+            
+            ### 📋 Changes
+            ${{ github.event.head_commit.message }}
+          draft: false
+          prerelease: false
+          files: |
+            ${{ env.ZIP_NAME }}
+
+      - name: Verify build output
+        run: |
+          echo "Build verification:"
+          echo "App Name: ${{ env.APP_NAME }}"
+          echo "Version: ${{ env.APP_VERSION }}"
+          echo "ZIP file: ${{ env.ZIP_NAME }}"
+          
+          if (Test-Path "${{ env.ZIP_NAME }}") {
+              echo "✅ ZIP file exists"
+              $zipSize = (Get-Item "${{ env.ZIP_NAME }}").Length
+              echo "📦 ZIP size: $([math]::Round($zipSize/1MB, 2)) MB"
+          } else {
+              echo "❌ ZIP file not found"
+          }
+          
+          $buildPath = "build/windows/x64/runner/Release"
+          if (Test-Path $buildPath) {
+              echo "✅ Build directory exists"
+              echo "📁 Build contents:"
+              Get-ChildItem $buildPath | Format-Table Name, Length -AutoSize
+          } else {
+              echo "❌ Build directory not found"
+          }
+
+      - name: Upload additional assets (optional)
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          files: |
+            build/windows/x64/runner/Release/${{ env.APP_NAME }}.exe
+        continue-on-error: true
