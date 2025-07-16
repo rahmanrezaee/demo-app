@@ -12,22 +12,6 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        architecture: [x64, x86, arm64]
-        include:
-          - architecture: x64
-            flutter_arch: windows-x64
-            vs_arch: x64
-            folder_arch: x64
-          - architecture: x86
-            flutter_arch: windows-x86
-            vs_arch: x86
-            folder_arch: Win32
-          - architecture: arm64
-            flutter_arch: windows-arm64
-            vs_arch: arm64
-            folder_arch: arm64
 
     steps:
       - name: Checkout code
@@ -45,19 +29,12 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build Windows app for ${{ matrix.architecture }}
-        run: |
-          if ("${{ matrix.architecture }}" -eq "x86") {
-            flutter build windows --release --target-platform windows-x86
-          } elseif ("${{ matrix.architecture }}" -eq "arm64") {
-            flutter build windows --release --target-platform windows-arm64
-          } else {
-            flutter build windows --release --target-platform windows-x64
-          }
+      - name: Build Windows app
+        run: flutter build windows --release
 
       - name: Copy required DLLs and prepare package
         run: |
-          $buildPath = "build/windows/${{ matrix.folder_arch }}/runner/Release"
+          $buildPath = "build/windows/x64/runner/Release"
           
           # Ensure build directory exists
           if (!(Test-Path $buildPath)) {
@@ -65,15 +42,12 @@ jobs:
               exit 1
           }
           
-          echo "=== Building for ${{ matrix.architecture }} architecture ==="
-          echo "Build path: $buildPath"
-          
           echo "=== Copying Flutter DLLs ==="
           # Try multiple locations for flutter_windows.dll
           $flutterDllPaths = @(
-              "$env:FLUTTER_ROOT\bin\cache\artifacts\engine\${{ matrix.flutter_arch }}\flutter_windows.dll",
-              "$env:FLUTTER_ROOT\bin\cache\artifacts\engine\${{ matrix.flutter_arch }}-release\flutter_windows.dll",
-              "$env:FLUTTER_ROOT\bin\flutter_windows.dll"
+              "$env:FLUTTER_ROOT\bin\cache\artifacts\engine\windows-x64\flutter_windows.dll",
+              "$env:FLUTTER_ROOT\bin\flutter_windows.dll",
+              "$env:FLUTTER_ROOT\bin\cache\artifacts\engine\windows-x64-release\flutter_windows.dll"
           )
           
           $flutterDllFound = $false
@@ -121,59 +95,29 @@ jobs:
               exit 1
           }
           
-          echo "=== Copying Visual C++ Redistributables for ${{ matrix.architecture }} ==="
-          # Architecture-specific VC++ redistributable paths
-          $vcRedistPaths = @()
+          echo "=== Copying Visual C++ Redistributables ==="
+          # Find and copy Visual C++ Redistributable DLLs
+          $vcRedistPaths = @(
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\*.dll",
+              "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\*.dll",
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2019\BuildTools\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\*.dll",
+              "C:\Windows\System32\msvcp140.dll",
+              "C:\Windows\System32\vcruntime140.dll",
+              "C:\Windows\System32\vcruntime140_1.dll"
+          )
           
-          if ("${{ matrix.architecture }}" -eq "x64") {
-              $vcRedistPaths = @(
-                  "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\*.dll",
-                  "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\*.dll",
-                  "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2019\BuildTools\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\*.dll",
-                  "C:\Windows\System32\msvcp140.dll",
-                  "C:\Windows\System32\vcruntime140.dll",
-                  "C:\Windows\System32\vcruntime140_1.dll"
-              )
-          } elseif ("${{ matrix.architecture }}" -eq "x86") {
-              $vcRedistPaths = @(
-                  "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC\*\x86\Microsoft.VC*.CRT\*.dll",
-                  "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\*\x86\Microsoft.VC*.CRT\*.dll",
-                  "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2019\BuildTools\VC\Redist\MSVC\*\x86\Microsoft.VC*.CRT\*.dll",
-                  "C:\Windows\SysWOW64\msvcp140.dll",
-                  "C:\Windows\SysWOW64\vcruntime140.dll",
-                  "C:\Windows\SysWOW64\vcruntime140_1.dll"
-              )
-          } else {
-              # ARM64
-              $vcRedistPaths = @(
-                  "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT\*.dll",
-                  "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT\*.dll",
-                  "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2019\BuildTools\VC\Redist\MSVC\*\arm64\Microsoft.VC*.CRT\*.dll"
-              )
-          }
-          
-          $vcDllsFound = 0
           foreach ($path in $vcRedistPaths) {
               $files = Get-ChildItem $path -ErrorAction SilentlyContinue
               foreach ($file in $files) {
                   if ($file.Name -match "(msvcp140|vcruntime140)") {
                       Copy-Item $file.FullName $buildPath -Force -ErrorAction SilentlyContinue
                       echo "✅ Copied: $($file.Name)"
-                      $vcDllsFound++
                   }
               }
           }
           
-          if ($vcDllsFound -eq 0) {
-              Write-Warning "⚠️ No Visual C++ redistributables found for ${{ matrix.architecture }}"
-          }
-          
           echo "=== Final DLL verification ==="
-          $requiredDlls = @("flutter_windows.dll")
-          if ("${{ matrix.architecture }}" -ne "arm64") {
-              $requiredDlls += @("msvcp140.dll", "vcruntime140.dll")
-          }
-          
+          $requiredDlls = @("flutter_windows.dll", "msvcp140.dll", "vcruntime140.dll")
           foreach ($dll in $requiredDlls) {
               if (Test-Path "$buildPath\$dll") {
                   echo "✅ $dll - OK"
@@ -200,8 +144,8 @@ jobs:
           echo "APP_VERSION=$version" >> $env:GITHUB_ENV
           
           # Create ZIP package with all dependencies
-          $buildPath = "build/windows/${{ matrix.folder_arch }}/runner/Release"
-          $zipName = "$appName-windows-${{ matrix.architecture }}-$version.zip"
+          $buildPath = "build/windows/x64/runner/Release"
+          $zipName = "$appName-windows-x64-$version.zip"
           
           if (Test-Path $buildPath) {
               Compress-Archive -Path "$buildPath\*" -DestinationPath $zipName -Force
@@ -225,33 +169,22 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ env.APP_NAME }} v${{ env.APP_VERSION }} (${{ matrix.architecture }})
+          name: ${{ env.APP_NAME }} v${{ env.APP_VERSION }}
           body: |
             ## 🚀 ${{ env.APP_NAME }} Windows Release
             
             **Version:** ${{ env.APP_VERSION }}
             **Build:** ${{ steps.tag.outputs.tag }}
-            **Platform:** Windows ${{ matrix.architecture }}
-            **Architecture:** ${{ matrix.architecture }}
+            **Platform:** Windows x64
             
             ### 📦 Installation
-            1. Download the appropriate ZIP file for your system architecture:
-               - **x64**: For 64-bit Intel/AMD processors (most common)
-               - **x86**: For 32-bit Intel/AMD processors (older systems)
-               - **arm64**: For ARM64 processors (newer Windows on ARM devices)
+            1. Download the ZIP file from assets below
             2. Extract to your desired location
             3. Run the .exe file inside the extracted folder
             
-            ### 🖥️ System Requirements
-            - **x64**: Windows 10 x64 or later
-            - **x86**: Windows 10 x86 or later  
-            - **arm64**: Windows 11 ARM64 or Windows 10 ARM64 (version 1903+)
+            ### ⚠️ Requirements
+            - Windows 10 or later
             - Visual C++ Redistributable (included in package)
-            
-            ### ❓ Which version should I download?
-            - Most users should download the **x64** version
-            - Only download **x86** if you have a 32-bit Windows system
-            - Only download **arm64** if you have a Windows on ARM device (like Surface Pro X)
             
             ### 🔧 Build Info
             - Built from commit: ${{ github.sha }}
@@ -268,10 +201,9 @@ jobs:
 
       - name: Verify build output
         run: |
-          echo "=== Build Verification for ${{ matrix.architecture }} ==="
+          echo "=== Build Verification ==="
           echo "App Name: ${{ env.APP_NAME }}"
           echo "Version: ${{ env.APP_VERSION }}"
-          echo "Architecture: ${{ matrix.architecture }}"
           echo "ZIP file: ${{ env.ZIP_NAME }}"
           
           if (Test-Path "${{ env.ZIP_NAME }}") {
@@ -282,19 +214,15 @@ jobs:
               echo "❌ ZIP file not found"
           }
           
-          $buildPath = "build/windows/${{ matrix.folder_arch }}/runner/Release"
+          $buildPath = "build/windows/x64/runner/Release"
           if (Test-Path $buildPath) {
               echo "✅ Build directory exists"
               echo "📁 Build contents:"
               Get-ChildItem $buildPath | Format-Table Name, Length -AutoSize
           
               # Check for required DLLs
-              $requiredDlls = @("flutter_windows.dll")
-              if ("${{ matrix.architecture }}" -ne "arm64") {
-                  $requiredDlls += @("msvcp140.dll", "vcruntime140.dll")
-              }
-          
-              echo "🔍 Final DLL check for ${{ matrix.architecture }}:"
+              $requiredDlls = @("flutter_windows.dll", "msvcp140.dll", "vcruntime140.dll")
+              echo "🔍 Final DLL check:"
               foreach ($dll in $requiredDlls) {
                   if (Test-Path "$buildPath\$dll") {
                       echo "✅ $dll found"
@@ -305,24 +233,3 @@ jobs:
           } else {
               echo "❌ Build directory not found"
           }
-
-      - name: Upload architecture-specific executable
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          files: |
-            build/windows/${{ matrix.folder_arch }}/runner/Release/${{ env.APP_NAME }}.exe
-          token: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
-
-  create-combined-release:
-    needs: build-and-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Create combined release summary
-        run: |
-          echo "All architecture builds completed successfully!"
-          echo "Available downloads:"
-          echo "- x64: For 64-bit Intel/AMD systems (most common)"
-          echo "- x86: For 32-bit Intel/AMD systems"  
-          echo "- arm64: For ARM64 Windows devices"
